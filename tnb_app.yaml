@@ -1,0 +1,179 @@
+# --- Persistent Volume and Claim for MongoDB ---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mongodb-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /data/mongodb
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongodb-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+# --- MongoDB Secret for Internal Access ---
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret
+type: Opaque
+stringData:
+  MONGODB_URI: "mongodb://mongodb-service:27017/tnb_bit"
+
+# --- MongoDB Deployment ---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:6.0
+          ports:
+            - containerPort: 27017
+          env:
+            - name: MONGO_INITDB_DATABASE
+              value: tnb_bit
+          volumeMounts:
+            - name: mongo-storage
+              mountPath: /data/db
+      volumes:
+        - name: mongo-storage
+          persistentVolumeClaim:
+            claimName: mongodb-pvc
+
+# --- MongoDB Service (NodePort) ---
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-service
+spec:
+  selector:
+    app: mongodb
+  type: NodePort
+  ports:
+    - protocol: TCP
+      port: 27017
+      targetPort: 27017
+      nodePort: 32017
+
+# --- TickAndBit App Deployment ---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tickandbit-app-deployment
+  labels:
+    app: tickandbit-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tickandbit-app
+  template:
+    metadata:
+      labels:
+        app: tickandbit-app
+    spec:
+      containers:
+        - name: tickandbit-app-container
+          image: khushalchandak/tickandbit-app:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: MONGODB_URI
+
+# --- TickAndBit App Service ---
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tickandbit-app-service
+spec:
+  selector:
+    app: tickandbit-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+  type: ClusterIP
+
+# --- Ingress for External Access ---
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tickandbit-app-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - host: tnb.192.168.0.223.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tickandbit-app-service
+                port:
+                  number: 80
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tnb-init-loader-v2
+spec:
+  template:
+    metadata:
+      name: tnb-init-loader-pod  # <-- Add this line
+    spec:
+      containers:
+        - name: mongo-loader
+          image: khushalchandak/tnb-loader:latest
+          env:
+            - name: MONGODB_URI
+              value: mongodb://mongodb-service:27017
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tnb-init-loader-v3  # <-- Changed name to avoid conflict
+spec:
+  template:
+    spec:
+      containers:
+        - name: mongo-loader
+          image: khushalchandak/tnb-loader:latest
+          env:
+            - name: MONGODB_URI
+              value: mongodb://mongodb-service:27017
+      restartPolicy: Never
